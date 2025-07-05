@@ -26,6 +26,87 @@ if (!OPENAI_API_KEY) {
 // Armazenar sessões ativas
 const activeSessions = new Map();
 
+// Estrutura para armazenar dados da sessão
+class SessionData {
+    constructor(sessionId) {
+        this.sessionId = sessionId;
+        this.startTime = new Date();
+        this.endTime = null;
+        this.totalCost = 0;
+        this.inputTokens = 0;
+        this.outputTokens = 0;
+        this.audioInputDuration = 0; // em segundos
+        this.audioOutputDuration = 0; // em segundos
+        this.messages = [];
+        this.transcriptions = [];
+        this.recordings = [];
+    }
+
+    addMessage(type, content, timestamp = new Date()) {
+        this.messages.push({
+            type,
+            content,
+            timestamp
+        });
+    }
+
+    addTranscription(text, type = 'user', timestamp = new Date()) {
+        this.transcriptions.push({
+            text,
+            type,
+            timestamp
+        });
+    }
+
+    addRecording(audioData, type = 'user', duration = 0, timestamp = new Date()) {
+        this.recordings.push({
+            audioData: audioData.substring(0, 100) + '...', // Armazenar apenas uma amostra
+            type,
+            duration,
+            timestamp,
+            size: audioData.length
+        });
+    }
+
+    calculateCost() {
+        // Preços da OpenAI Realtime API (valores aproximados em USD)
+        const COST_PER_INPUT_TOKEN = 0.000006; // $0.006 per 1K tokens
+        const COST_PER_OUTPUT_TOKEN = 0.000024; // $0.024 per 1K tokens
+        const COST_PER_AUDIO_SECOND = 0.000024; // $0.024 per minute / 60
+
+        const tokenCost = (this.inputTokens * COST_PER_INPUT_TOKEN) + (this.outputTokens * COST_PER_OUTPUT_TOKEN);
+        const audioCost = (this.audioInputDuration + this.audioOutputDuration) * COST_PER_AUDIO_SECOND;
+        
+        this.totalCost = tokenCost + audioCost;
+        return this.totalCost;
+    }
+
+    getDurationInSeconds() {
+        const endTime = this.endTime || new Date();
+        return Math.floor((endTime - this.startTime) / 1000);
+    }
+
+    getSessionSummary() {
+        return {
+            sessionId: this.sessionId,
+            startTime: this.startTime,
+            endTime: this.endTime,
+            duration: this.getDurationInSeconds(),
+            totalCost: this.calculateCost(),
+            inputTokens: this.inputTokens,
+            outputTokens: this.outputTokens,
+            audioInputDuration: this.audioInputDuration,
+            audioOutputDuration: this.audioOutputDuration,
+            messagesCount: this.messages.length,
+            transcriptionsCount: this.transcriptions.length,
+            recordingsCount: this.recordings.length
+        };
+    }
+}
+
+// Armazenar dados das sessões
+const sessionDataStore = new Map();
+
 // Classe para gerenciar sessões da OpenAI Realtime
 class OpenAIRealtimeSession {
     constructor(sessionId) {
@@ -37,6 +118,10 @@ class OpenAIRealtimeSession {
         this.maxReconnectAttempts = 3;
         this.isAIResponding = false;
         this.lastSpeechDetection = null;
+        
+        // Criar dados da sessão
+        this.sessionData = new SessionData(sessionId);
+        sessionDataStore.set(sessionId, this.sessionData);
     }
 
     async initialize(clientWebSocket) {
@@ -197,11 +282,13 @@ Sempre trate o usuário de forma amigável e personalizada.
             try {
                 const message = JSON.parse(data.toString());
                 
-                // Log de eventos importantes
+                // Log de eventos importantes e rastrear dados
                 if (message.type === 'session.created') {
                     console.log(`🎉 Sessão criada: ${message.session.id}`);
+                    this.sessionData.addMessage('system', 'Sessão criada');
                 } else if (message.type === 'error') {
                     console.error(`❌ Erro da OpenAI:`, message.error);
+                    this.sessionData.addMessage('error', `Erro: ${message.error.message}`);
                 } else if (message.type === 'response.audio.delta') {
                     // Áudio recebido da OpenAI - repassar para o cliente
                     if (this.clientWs && this.clientWs.readyState === WebSocket.OPEN) {
@@ -210,9 +297,13 @@ Sempre trate o usuário de forma amigável e personalizada.
                             audio: message.delta
                         }));
                     }
+                    // Rastrear áudio de saída
+                    this.sessionData.addRecording(message.delta, 'assistant', 0.1); // Estimativa de 0.1s por delta
+                    this.sessionData.audioOutputDuration += 0.1;
                 } else if (message.type === 'input_audio_buffer.speech_started') {
                     console.log(`🎤 Fala detectada na sessão ${this.sessionId}`);
                     this.lastSpeechDetection = Date.now();
+                    this.sessionData.addMessage('system', 'Fala detectada');
                     
                     // Se a IA estiver respondendo, cancelar para evitar sobreposição
                     if (this.isAIResponding) {
@@ -224,10 +315,23 @@ Sempre trate o usuário de forma amigável e personalizada.
                     }
                 } else if (message.type === 'input_audio_buffer.speech_stopped') {
                     console.log(`🔇 Fim da fala na sessão ${this.sessionId}`);
+                    this.sessionData.addMessage('system', 'Fim da fala');
                 } else if (message.type === 'response.audio.done') {
                     this.isAIResponding = false;
                 } else if (message.type === 'response.created') {
                     this.isAIResponding = true;
+                    this.sessionData.outputTokens += 10; // Estimativa
+                } else if (message.type === 'conversation.item.input_audio_transcription.completed') {
+                    // Rastrear transcrição do usuário
+                    if (message.transcript) {
+                        this.sessionData.addTranscription(message.transcript, 'user');
+                        this.sessionData.inputTokens += Math.ceil(message.transcript.length / 4); // Estimativa de tokens
+                    }
+                } else if (message.type === 'response.audio_transcript.delta') {
+                    // Rastrear transcrição da IA
+                    if (message.delta) {
+                        this.sessionData.addTranscription(message.delta, 'assistant');
+                    }
                 }
 
                 // Repassar todas as mensagens para o cliente (exceto áudio que já foi tratado)
@@ -277,6 +381,9 @@ Sempre trate o usuário de forma amigável e personalizada.
                         type: 'input_audio_buffer.append',
                         audio: message.audio
                     });
+                    // Rastrear áudio de entrada
+                    this.sessionData.addRecording(message.audio, 'user', 0.1); // Estimativa de 0.1s por chunk
+                    this.sessionData.audioInputDuration += 0.1;
                 } else if (message.type === 'commit_audio') {
                     // Cliente terminou de enviar áudio
                     this.sendToOpenAI({
@@ -287,6 +394,7 @@ Sempre trate o usuário de forma amigável e personalizada.
                     this.sendToOpenAI({
                         type: 'response.cancel'
                     });
+                    this.sessionData.addMessage('system', 'Resposta cancelada');
                 }
 
             } catch (error) {
@@ -316,6 +424,21 @@ Sempre trate o usuário de forma amigável e personalizada.
         if (this.openaiWs) {
             this.openaiWs.close();
         }
+        
+        // Finalizar dados da sessão
+        this.sessionData.endTime = new Date();
+        this.sessionData.addMessage('system', 'Sessão encerrada');
+        
+        // Log do resumo da sessão
+        const summary = this.sessionData.getSessionSummary();
+        console.log(`📊 Resumo da sessão ${this.sessionId}:`, {
+            duração: `${summary.duration}s`,
+            custo: `$${summary.totalCost.toFixed(6)}`,
+            mensagens: summary.messagesCount,
+            transcrições: summary.transcriptionsCount,
+            gravações: summary.recordingsCount
+        });
+        
         activeSessions.delete(this.sessionId);
         console.log(`🧹 Sessão limpa: ${this.sessionId}`);
     }
@@ -368,6 +491,86 @@ app.get('/api/status', (req, res) => {
         activeSessions: activeSessions.size,
         timestamp: new Date().toISOString(),
         model: OPENAI_REALTIME_MODEL
+    });
+});
+
+// Rota para obter dados da sessão
+app.get('/api/session/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+    const sessionData = sessionDataStore.get(sessionId);
+    
+    if (!sessionData) {
+        return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+    
+    res.json(sessionData.getSessionSummary());
+});
+
+// Rota para obter transcrições da sessão
+app.get('/api/session/:sessionId/transcriptions', (req, res) => {
+    const { sessionId } = req.params;
+    const sessionData = sessionDataStore.get(sessionId);
+    
+    if (!sessionData) {
+        return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+    
+    res.json({
+        sessionId,
+        transcriptions: sessionData.transcriptions,
+        count: sessionData.transcriptions.length
+    });
+});
+
+// Rota para obter gravações da sessão
+app.get('/api/session/:sessionId/recordings', (req, res) => {
+    const { sessionId } = req.params;
+    const sessionData = sessionDataStore.get(sessionId);
+    
+    if (!sessionData) {
+        return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+    
+    res.json({
+        sessionId,
+        recordings: sessionData.recordings,
+        count: sessionData.recordings.length,
+        totalInputDuration: sessionData.audioInputDuration,
+        totalOutputDuration: sessionData.audioOutputDuration
+    });
+});
+
+// Rota para obter custos da sessão
+app.get('/api/session/:sessionId/costs', (req, res) => {
+    const { sessionId } = req.params;
+    const sessionData = sessionDataStore.get(sessionId);
+    
+    if (!sessionData) {
+        return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+    
+    const cost = sessionData.calculateCost();
+    res.json({
+        sessionId,
+        totalCost: cost,
+        inputTokens: sessionData.inputTokens,
+        outputTokens: sessionData.outputTokens,
+        audioInputDuration: sessionData.audioInputDuration,
+        audioOutputDuration: sessionData.audioOutputDuration,
+        breakdown: {
+            tokenCost: (sessionData.inputTokens * 0.000006) + (sessionData.outputTokens * 0.000024),
+            audioCost: (sessionData.audioInputDuration + sessionData.audioOutputDuration) * 0.000024
+        }
+    });
+});
+
+// Rota para listar todas as sessões
+app.get('/api/sessions', (req, res) => {
+    const sessions = Array.from(sessionDataStore.values()).map(session => session.getSessionSummary());
+    res.json({
+        sessions,
+        count: sessions.length,
+        totalCost: sessions.reduce((sum, session) => sum + session.totalCost, 0)
     });
 });
 

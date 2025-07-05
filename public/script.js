@@ -15,6 +15,28 @@ class OpenAIRealtimeClient {
         this.isPlaying = false;
         this.currentAudioSources = new Set();
         this.audioScheduler = null;
+        this.audioQueue = [];
+        this.nextStartTime = 0;
+        this.isProcessingQueue = false;
+        
+        // Analytics tracking
+        this.sessionStartTime = null;
+        this.analyticsInterval = null;
+        this.lastAnalyticsUpdate = 0;
+        
+        // Voice settings
+        this.voiceSettings = {
+            voice: 'echo',
+            temperature: 0.8,
+            max_response_output_tokens: 4096,
+            turn_detection: {
+                type: 'server_vad',
+                threshold: 0.6,
+                prefix_padding_ms: 200,
+                silence_duration_ms: 500
+            },
+            custom_instructions: ''
+        };
         
         // Elementos DOM
         this.elements = {};
@@ -31,7 +53,17 @@ class OpenAIRealtimeClient {
             'connectionPanel', 'audioPanel', 'conversationLog', 'loadingOverlay',
             'loadingText', 'errorModal', 'errorMessage', 'errorModalClose',
             'errorModalOk', 'micVisualizer', 'latencyInfo', 'sessionInfo',
-            'modelInfo', 'audioQualityInfo', 'speakerStatus'
+            'modelInfo', 'audioQualityInfo', 'speakerStatus',
+            // Novos elementos para analytics
+            'refreshAnalyticsBtn', 'sessionDuration', 'sessionCost', 'audioInputDuration',
+            'audioOutputDuration', 'inputTokensInfo', 'outputTokensInfo',
+            'transcriptionsContainer', 'recordingsContainer', 'downloadTranscriptionsBtn',
+            'clearTranscriptionsBtn', 'exportRecordingsBtn',
+            // Elementos para configurações de voz
+            'toggleVoiceSettingsBtn', 'voiceSettingsPanel', 'voiceModelSelect',
+            'temperatureSlider', 'temperatureValue', 'maxTokensSlider', 'maxTokensValue',
+            'vadThresholdSlider', 'vadThresholdValue', 'silenceDurationSlider', 'silenceDurationValue',
+            'customInstructions', 'applyVoiceSettingsBtn', 'testVoiceBtn', 'resetVoiceBtn'
         ];
 
         elementIds.forEach(id => {
@@ -57,6 +89,35 @@ class OpenAIRealtimeClient {
         this.elements.speakerVolumeSlider.addEventListener('input', (e) => {
             this.speakerVolume = e.target.value / 100;
             this.elements.speakerVolumeValue.textContent = e.target.value + '%';
+        });
+
+        // Novos botões de analytics
+        this.elements.refreshAnalyticsBtn?.addEventListener('click', () => this.refreshAnalytics());
+        this.elements.downloadTranscriptionsBtn?.addEventListener('click', () => this.downloadTranscriptions());
+        this.elements.clearTranscriptionsBtn?.addEventListener('click', () => this.clearTranscriptions());
+        this.elements.exportRecordingsBtn?.addEventListener('click', () => this.exportRecordings());
+
+        // Configurações de voz
+        this.elements.toggleVoiceSettingsBtn?.addEventListener('click', () => this.toggleVoiceSettings());
+        this.elements.applyVoiceSettingsBtn?.addEventListener('click', () => this.applyVoiceSettings());
+        this.elements.testVoiceBtn?.addEventListener('click', () => this.testVoice());
+        this.elements.resetVoiceBtn?.addEventListener('click', () => this.resetVoiceSettings());
+
+        // Sliders de configuração de voz
+        this.elements.temperatureSlider?.addEventListener('input', (e) => {
+            this.elements.temperatureValue.textContent = e.target.value;
+        });
+
+        this.elements.maxTokensSlider?.addEventListener('input', (e) => {
+            this.elements.maxTokensValue.textContent = e.target.value;
+        });
+
+        this.elements.vadThresholdSlider?.addEventListener('input', (e) => {
+            this.elements.vadThresholdValue.textContent = e.target.value;
+        });
+
+        this.elements.silenceDurationSlider?.addEventListener('input', (e) => {
+            this.elements.silenceDurationValue.textContent = e.target.value + 'ms';
         });
 
         // Modal de erro
@@ -121,6 +182,10 @@ class OpenAIRealtimeClient {
             this.updateConnectionState(true);
             this.hideLoadingOverlay();
             
+            // Iniciar analytics
+            this.sessionStartTime = new Date();
+            this.startAnalyticsTracking();
+            
             this.logMessage('system', 'Conectado com sucesso! Você pode começar a falar.');
 
         } catch (error) {
@@ -145,6 +210,10 @@ class OpenAIRealtimeClient {
             this.ws.onopen = () => {
                 clearTimeout(timeout);
                 console.log('WebSocket conectado');
+                
+                // Enviar configuração inicial da sessão com configurações de voz
+                this.sendInitialSessionConfig();
+                
                 resolve();
             };
 
@@ -222,6 +291,8 @@ class OpenAIRealtimeClient {
             case 'conversation.item.input_audio_transcription.completed':
                 if (event.transcript) {
                     this.updateLastUserMessage(event.transcript);
+                    // Atualizar transcrições em tempo real
+                    setTimeout(() => this.loadTranscriptions(), 500);
                 }
                 break;
 
@@ -229,6 +300,16 @@ class OpenAIRealtimeClient {
                 if (event.delta) {
                     this.appendAssistantMessage(event.delta);
                 }
+                break;
+
+            case 'response.audio_transcript.done':
+                // Atualizar transcrições quando a resposta estiver completa
+                setTimeout(() => this.loadTranscriptions(), 500);
+                break;
+
+            case 'response.audio.delta':
+                // IGNORAR - áudio já é tratado via audio_delta do servidor
+                // Isso previne duplicação de áudio
                 break;
 
             case 'response.audio.done':
@@ -283,7 +364,12 @@ class OpenAIRealtimeClient {
         };
 
         source.connect(this.audioProcessor);
-        this.audioProcessor.connect(this.audioContext.destination);
+        // Conectar ao destination apenas para processamento, mas sem volume
+        // Isso permite que o audioProcessor funcione sem reproduzir o áudio do microfone
+        const silentGain = this.audioContext.createGain();
+        silentGain.gain.value = 0; // Volume zero para evitar eco
+        this.audioProcessor.connect(silentGain);
+        silentGain.connect(this.audioContext.destination);
     }
 
     floatToPCM16(float32Array) {
@@ -330,34 +416,47 @@ class OpenAIRealtimeClient {
             const audioContextBuffer = this.audioContext.createBuffer(1, float32Array.length, 24000);
             audioContextBuffer.getChannelData(0).set(float32Array);
 
-            // Criar source e aplicar volume
-            const source = this.audioContext.createBufferSource();
-            const gainNode = this.audioContext.createGain();
-            
-            source.buffer = audioContextBuffer;
-            gainNode.gain.value = this.speakerVolume;
-            
-            source.connect(gainNode);
-            gainNode.connect(this.audioContext.destination);
-            
-            // Controle de sobreposição - rastrear fontes ativas
-            this.currentAudioSources.add(source);
-            this.isPlaying = true;
-            this.updateSpeakerStatus();
-            
-            source.onended = () => {
-                this.currentAudioSources.delete(source);
-                if (this.currentAudioSources.size === 0) {
-                    this.isPlaying = false;
-                    this.updateSpeakerStatus();
-                }
-            };
-            
-            source.start();
+            // Adicionar à fila para reprodução sequencial
+            this.queueAudioBuffer(audioContextBuffer);
 
         } catch (error) {
-            console.error('Erro ao reproduzir áudio:', error);
+            console.error('Erro ao processar áudio:', error);
         }
+    }
+
+    queueAudioBuffer(audioBuffer) {
+        // Calcular quando este áudio deve começar
+        const currentTime = this.audioContext.currentTime;
+        const startTime = Math.max(currentTime, this.nextStartTime);
+        
+        // Criar source e aplicar volume
+        const source = this.audioContext.createBufferSource();
+        const gainNode = this.audioContext.createGain();
+        
+        source.buffer = audioBuffer;
+        gainNode.gain.value = this.speakerVolume;
+        
+        source.connect(gainNode);
+        gainNode.connect(this.audioContext.destination);
+        
+        // Controle de fontes ativas
+        this.currentAudioSources.add(source);
+        this.isPlaying = true;
+        this.updateSpeakerStatus();
+        
+        source.onended = () => {
+            this.currentAudioSources.delete(source);
+            if (this.currentAudioSources.size === 0) {
+                this.isPlaying = false;
+                this.updateSpeakerStatus();
+            }
+        };
+        
+        // Agendar reprodução no tempo correto
+        source.start(startTime);
+        
+        // Atualizar próximo tempo de início
+        this.nextStartTime = startTime + audioBuffer.duration;
     }
 
     // Método para parar todo áudio atual (prevenir sobreposição)
@@ -372,6 +471,9 @@ class OpenAIRealtimeClient {
         this.currentAudioSources.clear();
         this.isPlaying = false;
         this.updateSpeakerStatus();
+        
+        // Resetar fila de áudio para nova sequência
+        this.nextStartTime = 0;
     }
 
     // Atualizar status do alto-falante
@@ -460,6 +562,7 @@ class OpenAIRealtimeClient {
     }
 
     disconnect() {
+        this.stopAnalyticsTracking();
         this.cleanup();
         this.updateConnectionState(false);
         this.logMessage('system', 'Desconectado');
@@ -468,6 +571,9 @@ class OpenAIRealtimeClient {
     cleanup() {
         // Parar todo áudio em reprodução
         this.stopAllAudio();
+        
+        // Parar analytics tracking
+        this.stopAnalyticsTracking();
         
         if (this.audioProcessor) {
             this.audioProcessor.disconnect();
@@ -493,6 +599,8 @@ class OpenAIRealtimeClient {
         this.sessionId = null;
         this.isPlaying = false;
         this.currentAudioSources.clear();
+        this.nextStartTime = 0;
+        this.sessionStartTime = null;
     }
 
     updateConnectionState(connected) {
@@ -601,6 +709,505 @@ class OpenAIRealtimeClient {
         this.elements.loadingText.textContent = text;
         this.elements.loadingOverlay.style.display = 'flex';
     }
+    // ========== ANALYTICS E VISUALIZAÇÃO DE DADOS ==========
+
+    startAnalyticsTracking() {
+        // Atualizar analytics a cada 2 segundos
+        this.analyticsInterval = setInterval(() => {
+            this.updateAnalytics();
+        }, 2000);
+        
+        // Atualização inicial
+        this.updateAnalytics();
+    }
+
+    stopAnalyticsTracking() {
+        if (this.analyticsInterval) {
+            clearInterval(this.analyticsInterval);
+            this.analyticsInterval = null;
+        }
+    }
+
+    async updateAnalytics() {
+        if (!this.sessionId) return;
+
+        try {
+            const response = await fetch(`/api/session/${this.sessionId}`);
+            if (response.ok) {
+                const data = await response.json();
+                this.displayAnalytics(data);
+            }
+        } catch (error) {
+            console.error('Erro ao atualizar analytics:', error);
+        }
+    }
+
+    displayAnalytics(data) {
+        // Duração da sessão
+        if (this.elements.sessionDuration) {
+            const duration = this.formatDuration(data.duration);
+            this.elements.sessionDuration.textContent = duration;
+            this.elements.sessionDuration.classList.add('updating');
+            setTimeout(() => this.elements.sessionDuration.classList.remove('updating'), 300);
+        }
+
+        // Custo total
+        if (this.elements.sessionCost) {
+            const cost = `$${data.totalCost.toFixed(6)}`;
+            this.elements.sessionCost.textContent = cost;
+            this.elements.sessionCost.classList.add('updating');
+            setTimeout(() => this.elements.sessionCost.classList.remove('updating'), 300);
+        }
+
+        // Duração de áudio
+        if (this.elements.audioInputDuration) {
+            this.elements.audioInputDuration.textContent = `${data.audioInputDuration.toFixed(1)}s`;
+        }
+        
+        if (this.elements.audioOutputDuration) {
+            this.elements.audioOutputDuration.textContent = `${data.audioOutputDuration.toFixed(1)}s`;
+        }
+
+        // Tokens
+        if (this.elements.inputTokensInfo) {
+            this.elements.inputTokensInfo.textContent = data.inputTokens.toString();
+        }
+        
+        if (this.elements.outputTokensInfo) {
+            this.elements.outputTokensInfo.textContent = data.outputTokens.toString();
+        }
+    }
+
+    async refreshAnalytics() {
+        if (!this.sessionId) return;
+
+        try {
+            // Mostrar loading no botão
+            const btn = this.elements.refreshAnalyticsBtn;
+            const originalContent = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Atualizando...';
+            btn.disabled = true;
+
+            // Atualizar todos os dados
+            await Promise.all([
+                this.updateAnalytics(),
+                this.loadTranscriptions(),
+                this.loadRecordings()
+            ]);
+
+            // Restaurar botão
+            setTimeout(() => {
+                btn.innerHTML = originalContent;
+                btn.disabled = false;
+            }, 1000);
+
+        } catch (error) {
+            console.error('Erro ao atualizar dados:', error);
+            this.showError('Erro ao atualizar dados da sessão');
+        }
+    }
+
+    async loadTranscriptions() {
+        if (!this.sessionId) return;
+
+        try {
+            const response = await fetch(`/api/session/${this.sessionId}/transcriptions`);
+            if (response.ok) {
+                const data = await response.json();
+                this.displayTranscriptions(data.transcriptions);
+            }
+        } catch (error) {
+            console.error('Erro ao carregar transcrições:', error);
+        }
+    }
+
+    displayTranscriptions(transcriptions) {
+        const container = this.elements.transcriptionsContainer;
+        if (!container) return;
+
+        if (transcriptions.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-file-alt"></i>
+                    <p>Nenhuma transcrição disponível ainda.</p>
+                    <small>As transcrições aparecerão aqui conforme você conversa.</small>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = transcriptions.map(transcription => `
+            <div class="transcription-item ${transcription.type}">
+                <div class="transcription-meta">
+                    <div class="transcription-type ${transcription.type}">
+                        <i class="fas fa-${transcription.type === 'user' ? 'user' : 'robot'}"></i>
+                        ${transcription.type === 'user' ? 'Você' : 'IA'}
+                    </div>
+                    <div class="transcription-time">
+                        ${new Date(transcription.timestamp).toLocaleTimeString('pt-BR')}
+                    </div>
+                </div>
+                <div class="transcription-text">
+                    ${transcription.text}
+                </div>
+            </div>
+        `).join('');
+    }
+
+    async loadRecordings() {
+        if (!this.sessionId) return;
+
+        try {
+            const response = await fetch(`/api/session/${this.sessionId}/recordings`);
+            if (response.ok) {
+                const data = await response.json();
+                this.displayRecordings(data.recordings);
+            }
+        } catch (error) {
+            console.error('Erro ao carregar gravações:', error);
+        }
+    }
+
+    displayRecordings(recordings) {
+        const container = this.elements.recordingsContainer;
+        if (!container) return;
+
+        if (recordings.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-record-vinyl"></i>
+                    <p>Nenhuma gravação disponível ainda.</p>
+                    <small>As gravações aparecerão aqui conforme você conversa.</small>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = recordings.map((recording, index) => `
+            <div class="recording-item ${recording.type}">
+                <div class="recording-icon ${recording.type}">
+                    <i class="fas fa-${recording.type === 'user' ? 'microphone' : 'volume-up'}"></i>
+                </div>
+                <div class="recording-info">
+                    <div class="recording-title">
+                        ${recording.type === 'user' ? 'Gravação do Usuário' : 'Resposta da IA'} #${index + 1}
+                    </div>
+                    <div class="recording-details">
+                        ${new Date(recording.timestamp).toLocaleTimeString('pt-BR')} • 
+                        ${recording.duration.toFixed(1)}s • 
+    // ========== CONFIGURAÇÕES DE VOZ ==========
+
+    toggleVoiceSettings() {
+        const panel = this.elements.voiceSettingsPanel;
+        const btn = this.elements.toggleVoiceSettingsBtn;
+        
+        if (panel.style.display === 'none' || !panel.style.display) {
+            panel.style.display = 'block';
+            btn.innerHTML = '<i class="fas fa-cog"></i> Ocultar Configurações';
+            btn.classList.add('btn-warning');
+            btn.classList.remove('btn-secondary');
+        } else {
+            panel.style.display = 'none';
+            btn.innerHTML = '<i class="fas fa-cog"></i> Configurações de Voz';
+            btn.classList.add('btn-secondary');
+            btn.classList.remove('btn-warning');
+        }
+    }
+
+    applyVoiceSettings() {
+        if (!this.isConnected) {
+            this.showError('Conecte-se primeiro para aplicar as configurações de voz');
+            return;
+        }
+
+        try {
+            // Coletar configurações da interface
+            this.voiceSettings.voice = this.elements.voiceModelSelect?.value || 'echo';
+            this.voiceSettings.temperature = parseFloat(this.elements.temperatureSlider?.value || '0.8');
+            this.voiceSettings.max_response_output_tokens = parseInt(this.elements.maxTokensSlider?.value || '4096');
+            
+            this.voiceSettings.turn_detection.threshold = parseFloat(this.elements.vadThresholdSlider?.value || '0.6');
+            this.voiceSettings.turn_detection.silence_duration_ms = parseInt(this.elements.silenceDurationSlider?.value || '500');
+            
+            this.voiceSettings.custom_instructions = this.elements.customInstructions?.value || '';
+
+            // Construir instruções completas
+            const baseInstructions = "Você é Jamez, o assistente virtual oficial da plataforma RealsBet e do Game Show Teleshow. " +
+                "Seu papel é ser um guia interativo, transparente e divertido, ajudando o usuário a tomar decisões mais conscientes nos jogos. " +
+                "Sempre trate o usuário de forma amigável e personalizada. " +
+                "RealsBet é entretenimento com estratégia. Proibido para menores de 18 anos. Jogue com responsabilidade.";
+
+            const finalInstructions = this.voiceSettings.custom_instructions 
+                ? baseInstructions + "\n\nInstruções Personalizadas: " + this.voiceSettings.custom_instructions
+                : baseInstructions;
+
+            // Enviar nova configuração para OpenAI
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({
+                    type: 'update_session',
+                    session: {
+                        modalities: ['text', 'audio'],
+                        instructions: finalInstructions,
+                        voice: this.voiceSettings.voice,
+                        input_audio_format: 'pcm16',
+                        output_audio_format: 'pcm16',
+                        input_audio_transcription: {
+                            model: 'whisper-1'
+                        },
+                        turn_detection: this.voiceSettings.turn_detection,
+                        tools: [],
+                        tool_choice: 'auto',
+                        temperature: this.voiceSettings.temperature,
+                        max_response_output_tokens: this.voiceSettings.max_response_output_tokens
+                    }
+                }));
+
+                this.logMessage('system', 'Configurações de voz aplicadas com sucesso!');
+                
+                // Mostrar feedback visual
+                const btn = this.elements.applyVoiceSettingsBtn;
+                const originalContent = btn.innerHTML;
+                btn.innerHTML = '<i class="fas fa-check"></i> Aplicado!';
+                btn.classList.add('btn-success');
+                btn.classList.remove('btn-primary');
+                
+                setTimeout(() => {
+                    btn.innerHTML = originalContent;
+                    btn.classList.add('btn-primary');
+                    btn.classList.remove('btn-success');
+                }, 2000);
+            }
+
+        } catch (error) {
+            console.error('Erro ao aplicar configurações de voz:', error);
+            this.showError('Erro ao aplicar configurações de voz: ' + error.message);
+        }
+    }
+
+    testVoice() {
+        if (!this.isConnected) {
+            this.showError('Conecte-se primeiro para testar a voz');
+            return;
+        }
+
+        // Aplicar configurações primeiro
+        this.applyVoiceSettings();
+
+        // Aguardar um pouco e então enviar uma mensagem de teste
+        setTimeout(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({
+                    type: 'test_voice',
+                    message: 'Olá! Esta é uma mensagem de teste para verificar as configurações de voz. Como você está hoje?'
+                }));
+                
+                this.logMessage('system', 'Teste de voz enviado. Aguarde a resposta...');
+            }
+        }, 1000);
+    }
+
+    resetVoiceSettings() {
+        // Resetar para valores padrão
+        this.voiceSettings = {
+            voice: 'echo',
+            temperature: 0.8,
+            max_response_output_tokens: 4096,
+            turn_detection: {
+                type: 'server_vad',
+                threshold: 0.6,
+                prefix_padding_ms: 200,
+                silence_duration_ms: 500
+            },
+            custom_instructions: ''
+        };
+
+        // Atualizar interface
+        if (this.elements.voiceModelSelect) this.elements.voiceModelSelect.value = 'echo';
+        if (this.elements.temperatureSlider) {
+            this.elements.temperatureSlider.value = '0.8';
+            this.elements.temperatureValue.textContent = '0.8';
+        }
+        if (this.elements.maxTokensSlider) {
+            this.elements.maxTokensSlider.value = '4096';
+            this.elements.maxTokensValue.textContent = '4096';
+        }
+        if (this.elements.vadThresholdSlider) {
+            this.elements.vadThresholdSlider.value = '0.6';
+            this.elements.vadThresholdValue.textContent = '0.6';
+        }
+        if (this.elements.silenceDurationSlider) {
+            this.elements.silenceDurationSlider.value = '500';
+            this.elements.silenceDurationValue.textContent = '500ms';
+        }
+        if (this.elements.customInstructions) {
+            this.elements.customInstructions.value = '';
+        }
+
+        this.logMessage('system', 'Configurações de voz resetadas para os valores padrão');
+
+        // Aplicar automaticamente se conectado
+        if (this.isConnected) {
+            setTimeout(() => this.applyVoiceSettings(), 500);
+        }
+    }
+
+                        ${this.formatBytes(recording.size)}
+                    </div>
+                </div>
+                <div class="recording-actions">
+                    <button class="btn btn-small btn-secondary" onclick="realtimeClient.downloadRecording(${index})">
+                        <i class="fas fa-download"></i>
+                    </button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    async downloadTranscriptions() {
+        if (!this.sessionId) return;
+
+        try {
+            const response = await fetch(`/api/session/${this.sessionId}/transcriptions`);
+            if (response.ok) {
+                const data = await response.json();
+                
+                const content = data.transcriptions.map(t => 
+                    `[${new Date(t.timestamp).toLocaleString('pt-BR')}] ${t.type === 'user' ? 'Você' : 'IA'}: ${t.text}`
+                ).join('\n\n');
+
+                this.downloadFile(
+                    `transcricoes-${this.sessionId.substring(0, 8)}.txt`,
+                    content,
+                    'text/plain'
+                );
+            }
+        } catch (error) {
+            console.error('Erro ao baixar transcrições:', error);
+            this.showError('Erro ao baixar transcrições');
+        }
+    }
+
+    clearTranscriptions() {
+        const container = this.elements.transcriptionsContainer;
+        if (container) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-file-alt"></i>
+                    <p>Transcrições limpas.</p>
+                    <small>Novas transcrições aparecerão aqui conforme você conversa.</small>
+                </div>
+            `;
+        }
+    }
+
+    async exportRecordings() {
+        if (!this.sessionId) return;
+
+        try {
+            const response = await fetch(`/api/session/${this.sessionId}/recordings`);
+            if (response.ok) {
+                const data = await response.json();
+                
+                const exportData = {
+                    sessionId: this.sessionId,
+                    exportDate: new Date().toISOString(),
+                    totalRecordings: data.count,
+                    totalInputDuration: data.totalInputDuration,
+                    totalOutputDuration: data.totalOutputDuration,
+                    recordings: data.recordings.map(r => ({
+                        type: r.type,
+                        timestamp: r.timestamp,
+                        duration: r.duration,
+                        size: r.size
+                    }))
+                };
+
+                this.downloadFile(
+                    `gravacoes-${this.sessionId.substring(0, 8)}.json`,
+                    JSON.stringify(exportData, null, 2),
+                    'application/json'
+                );
+            }
+        } catch (error) {
+            console.error('Erro ao exportar gravações:', error);
+            this.showError('Erro ao exportar gravações');
+        }
+    }
+
+    downloadRecording(index) {
+        // Esta funcionalidade requereria armazenar os dados de áudio completos
+        // Por enquanto, apenas mostra uma mensagem informativa
+        this.showError('Download de gravações individuais não implementado ainda. Use a exportação de dados.');
+    }
+
+    // Utilitários
+    formatDuration(seconds) {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+
+        if (hours > 0) {
+            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+        return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    downloadFile(filename, content, mimeType) {
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+
+    sendInitialSessionConfig() {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            // Construir instruções base
+            const baseInstructions = "Você é Jamez, o assistente virtual oficial da plataforma RealsBet e do Game Show Teleshow. " +
+                "Seu papel é ser um guia interativo, transparente e divertido, ajudando o usuário a tomar decisões mais conscientes nos jogos. " +
+                "Sempre trate o usuário de forma amigável e personalizada. " +
+                "RealsBet é entretenimento com estratégia. Proibido para menores de 18 anos. Jogue com responsabilidade.";
+
+            const finalInstructions = this.voiceSettings.custom_instructions
+                ? baseInstructions + "\n\nInstruções Personalizadas: " + this.voiceSettings.custom_instructions
+                : baseInstructions;
+
+            // Enviar configuração inicial da sessão
+            this.ws.send(JSON.stringify({
+                type: 'session_config',
+                config: {
+                    modalities: ['text', 'audio'],
+                    instructions: finalInstructions,
+                    voice: this.voiceSettings.voice,
+                    input_audio_format: 'pcm16',
+                    output_audio_format: 'pcm16',
+                    input_audio_transcription: {
+                        model: 'whisper-1'
+                    },
+                    turn_detection: this.voiceSettings.turn_detection,
+                    tools: [],
+                    tool_choice: 'auto',
+                    temperature: this.voiceSettings.temperature,
+                    max_response_output_tokens: this.voiceSettings.max_response_output_tokens
+                }
+            }));
+            
+            console.log('Configuração inicial da sessão enviada');
+        }
+    }
+
 
     updateLoadingText(text) {
         this.elements.loadingText.textContent = text;

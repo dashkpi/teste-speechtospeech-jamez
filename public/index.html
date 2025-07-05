@@ -102,6 +102,10 @@
 
                     <!-- Action Buttons -->
                     <div class="action-buttons">
+                        <button class="btn btn-secondary" id="toggleVoiceSettingsBtn">
+                            <i class="fas fa-cog"></i>
+                            Configurações de Voz
+                        </button>
                         <button class="btn btn-warning" id="interruptBtn">
                             <i class="fas fa-hand-paper"></i>
                             Interromper IA
@@ -109,6 +113,123 @@
                         <button class="btn btn-danger" id="disconnectBtn">
                             <i class="fas fa-stop"></i>
                             Encerrar Conversa
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Voice Settings Panel -->
+            <div class="panel voice-settings-panel" id="voiceSettingsPanel" style="display: none;">
+                <div class="panel-header">
+                    <h2><i class="fas fa-cog"></i> Configurações de Voz</h2>
+                    <button class="btn btn-small btn-secondary" id="resetVoiceBtn">
+                        <i class="fas fa-undo"></i>
+                        Resetar
+                    </button>
+                </div>
+                <div class="panel-content">
+                    <!-- Voice Selection -->
+                    <div class="voice-control-group">
+                        <label class="control-label">
+                            <i class="fas fa-user-tie"></i>
+                            Modelo de Voz
+                        </label>
+                        <select id="voiceModelSelect" class="voice-select">
+                            <option value="echo">Echo (Padrão)</option>
+                            <option value="alloy">Alloy</option>
+                            <option value="nova">Nova</option>
+                            <option value="shimmer">Shimmer</option>
+                        </select>
+                        <small class="voice-description">Escolha o modelo de voz da IA</small>
+                    </div>
+
+                    <!-- Temperature -->
+                    <div class="voice-control-group">
+                        <label class="control-label">
+                            <i class="fas fa-thermometer-half"></i>
+                            Criatividade (Temperature)
+                        </label>
+                        <div class="voice-slider-container">
+                            <input type="range" id="temperatureSlider" min="0.1" max="1.0" step="0.1" value="0.8" class="voice-slider">
+                            <div class="slider-labels">
+                                <span>Conservador</span>
+                                <span id="temperatureValue">0.8</span>
+                                <span>Criativo</span>
+                            </div>
+                        </div>
+                        <small class="voice-description">Controla a criatividade das respostas</small>
+                    </div>
+
+                    <!-- Max Response Tokens -->
+                    <div class="voice-control-group">
+                        <label class="control-label">
+                            <i class="fas fa-comment-dots"></i>
+                            Tamanho Máximo da Resposta
+                        </label>
+                        <div class="voice-slider-container">
+                            <input type="range" id="maxTokensSlider" min="512" max="4096" step="256" value="4096" class="voice-slider">
+                            <div class="slider-labels">
+                                <span>Curta</span>
+                                <span id="maxTokensValue">4096</span>
+                                <span>Longa</span>
+                            </div>
+                        </div>
+                        <small class="voice-description">Define o comprimento máximo das respostas</small>
+                    </div>
+
+                    <!-- Voice Activity Detection -->
+                    <div class="voice-control-group">
+                        <label class="control-label">
+                            <i class="fas fa-microphone-alt"></i>
+                            Detecção de Fala
+                        </label>
+                        <div class="vad-controls">
+                            <div class="vad-setting">
+                                <label for="vadThresholdSlider">Sensibilidade</label>
+                                <div class="voice-slider-container">
+                                    <input type="range" id="vadThresholdSlider" min="0.1" max="1.0" step="0.1" value="0.6" class="voice-slider">
+                                    <div class="slider-labels">
+                                        <span>Baixa</span>
+                                        <span id="vadThresholdValue">0.6</span>
+                                        <span>Alta</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="vad-setting">
+                                <label for="silenceDurationSlider">Tempo de Silêncio (ms)</label>
+                                <div class="voice-slider-container">
+                                    <input type="range" id="silenceDurationSlider" min="200" max="2000" step="100" value="500" class="voice-slider">
+                                    <div class="slider-labels">
+                                        <span>200ms</span>
+                                        <span id="silenceDurationValue">500ms</span>
+                                        <span>2000ms</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <small class="voice-description">Ajusta como a IA detecta quando você para de falar</small>
+                    </div>
+
+                    <!-- Instructions -->
+                    <div class="voice-control-group">
+                        <label class="control-label">
+                            <i class="fas fa-edit"></i>
+                            Instruções Personalizadas
+                        </label>
+                        <textarea id="customInstructions" class="voice-textarea" rows="4"
+                                  placeholder="Digite instruções personalizadas para a IA (opcional)..."></textarea>
+                        <small class="voice-description">Instruções adicionais para personalizar o comportamento da IA</small>
+                    </div>
+
+                    <!-- Apply Settings Button -->
+                    <div class="voice-actions">
+                        <button class="btn btn-primary" id="applyVoiceSettingsBtn">
+                            <i class="fas fa-check"></i>
+                            Aplicar Configurações
+                        </button>
+                        <button class="btn btn-secondary" id="testVoiceBtn">
+                            <i class="fas fa-play"></i>
+                            Testar Voz
                         </button>
                     </div>
                 </div>
@@ -138,6 +259,105 @@
                 </div>
             </div>
 
+            <!-- Session Analytics Panel -->
+            <div class="panel analytics-panel">
+                <div class="panel-header">
+                    <h2><i class="fas fa-chart-line"></i> Análise da Sessão</h2>
+                    <button class="btn btn-small btn-secondary" id="refreshAnalyticsBtn">
+                        <i class="fas fa-sync-alt"></i>
+                        Atualizar
+                    </button>
+                </div>
+                <div class="panel-content">
+                    <div class="analytics-grid">
+                        <div class="analytics-card">
+                            <div class="analytics-icon">
+                                <i class="fas fa-clock"></i>
+                            </div>
+                            <div class="analytics-content">
+                                <div class="analytics-label">Duração</div>
+                                <div class="analytics-value" id="sessionDuration">00:00</div>
+                            </div>
+                        </div>
+                        <div class="analytics-card">
+                            <div class="analytics-icon">
+                                <i class="fas fa-dollar-sign"></i>
+                            </div>
+                            <div class="analytics-content">
+                                <div class="analytics-label">Custo Total</div>
+                                <div class="analytics-value" id="sessionCost">$0.000</div>
+                            </div>
+                        </div>
+                        <div class="analytics-card">
+                            <div class="analytics-icon">
+                                <i class="fas fa-microphone"></i>
+                            </div>
+                            <div class="analytics-content">
+                                <div class="analytics-label">Áudio Entrada</div>
+                                <div class="analytics-value" id="audioInputDuration">0s</div>
+                            </div>
+                        </div>
+                        <div class="analytics-card">
+                            <div class="analytics-icon">
+                                <i class="fas fa-volume-up"></i>
+                            </div>
+                            <div class="analytics-content">
+                                <div class="analytics-label">Áudio Saída</div>
+                                <div class="analytics-value" id="audioOutputDuration">0s</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transcriptions Panel -->
+            <div class="panel transcriptions-panel">
+                <div class="panel-header">
+                    <h2><i class="fas fa-file-alt"></i> Transcrições</h2>
+                    <div class="panel-header-actions">
+                        <button class="btn btn-small btn-secondary" id="downloadTranscriptionsBtn">
+                            <i class="fas fa-download"></i>
+                            Baixar
+                        </button>
+                        <button class="btn btn-small btn-secondary" id="clearTranscriptionsBtn">
+                            <i class="fas fa-trash"></i>
+                            Limpar
+                        </button>
+                    </div>
+                </div>
+                <div class="panel-content">
+                    <div class="transcriptions-container" id="transcriptionsContainer">
+                        <div class="empty-state">
+                            <i class="fas fa-file-alt"></i>
+                            <p>Nenhuma transcrição disponível ainda.</p>
+                            <small>As transcrições aparecerão aqui conforme você conversa.</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recordings Panel -->
+            <div class="panel recordings-panel">
+                <div class="panel-header">
+                    <h2><i class="fas fa-record-vinyl"></i> Gravações</h2>
+                    <div class="panel-header-actions">
+                        <button class="btn btn-small btn-secondary" id="exportRecordingsBtn">
+                            <i class="fas fa-file-export"></i>
+                            Exportar
+                        </button>
+                    </div>
+                </div>
+                <div class="panel-content">
+                    <div class="recordings-container" id="recordingsContainer">
+                        <div class="empty-state">
+                            <i class="fas fa-record-vinyl"></i>
+                            <p>Nenhuma gravação disponível ainda.</p>
+                            <small>As gravações aparecerão aqui conforme você conversa.</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Technical Info Panel -->
             <div class="panel info-panel">
                 <div class="panel-header">
@@ -160,6 +380,14 @@
                         <div class="info-item">
                             <span class="info-label">Sessão:</span>
                             <span class="info-value" id="sessionInfo">--</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Tokens Entrada:</span>
+                            <span class="info-value" id="inputTokensInfo">0</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Tokens Saída:</span>
+                            <span class="info-value" id="outputTokensInfo">0</span>
                         </div>
                     </div>
                 </div>
