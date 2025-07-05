@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenAI Realtime Audio - Conversa por Voz</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1 class="title">
+                    <i class="fas fa-microphone-alt"></i>
+                    OpenAI Realtime Audio
+                </h1>
+                <p class="subtitle">Converse com IA usando sua voz em tempo real</p>
+            </div>
+            <div class="status-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span class="status-text" id="statusText">Desconectado</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Connection Panel -->
+            <div class="panel connection-panel" id="connectionPanel">
+                <div class="panel-header">
+                    <h2><i class="fas fa-plug"></i> Conexão</h2>
+                </div>
+                <div class="panel-content">
+                    <p class="info-text">
+                        Clique no botão abaixo para iniciar uma conversa por voz com a IA.
+                        Você precisará permitir o acesso ao microfone.
+                    </p>
+                    <button class="btn btn-primary btn-large" id="connectBtn">
+                        <i class="fas fa-play"></i>
+                        Iniciar Conversa
+                    </button>
+                </div>
+            </div>
+
+            <!-- Audio Controls Panel -->
+            <div class="panel audio-panel" id="audioPanel" style="display: none;">
+                <div class="panel-header">
+                    <h2><i class="fas fa-volume-up"></i> Controles de Áudio</h2>
+                </div>
+                <div class="panel-content">
+                    <!-- Microphone Controls -->
+                    <div class="audio-control-group">
+                        <label class="control-label">
+                            <i class="fas fa-microphone"></i>
+                            Microfone
+                        </label>
+                        <div class="control-row">
+                            <button class="btn btn-secondary" id="muteBtn">
+                                <i class="fas fa-microphone"></i>
+                                <span>Ativar</span>
+                            </button>
+                            <div class="volume-control">
+                                <span class="volume-label">Volume:</span>
+                                <input type="range" id="micVolumeSlider" min="0" max="100" value="80" class="volume-slider">
+                                <span class="volume-value" id="micVolumeValue">80%</span>
+                            </div>
+                        </div>
+                        <div class="audio-visualizer" id="micVisualizer">
+                            <div class="visualizer-bar"></div>
+                            <div class="visualizer-bar"></div>
+                            <div class="visualizer-bar"></div>
+                            <div class="visualizer-bar"></div>
+                            <div class="visualizer-bar"></div>
+                        </div>
+                    </div>
+
+                    <!-- Speaker Controls -->
+                    <div class="audio-control-group">
+                        <label class="control-label">
+                            <i class="fas fa-volume-up"></i>
+                            Alto-falante
+                        </label>
+                        <div class="control-row">
+                            <button class="btn btn-secondary" id="speakerMuteBtn">
+                                <i class="fas fa-volume-up"></i>
+                                <span>Ativar</span>
+                            </button>
+                            <div class="volume-control">
+                                <span class="volume-label">Volume:</span>
+                                <input type="range" id="speakerVolumeSlider" min="0" max="100" value="80" class="volume-slider">
+                                <span class="volume-value" id="speakerVolumeValue">80%</span>
+                            </div>
+                        </div>
+                        <div class="speaker-status-container">
+                            <span class="badge bg-secondary" id="speakerStatus">🔇 Silencioso</span>
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="action-buttons">
+                        <button class="btn btn-warning" id="interruptBtn">
+                            <i class="fas fa-hand-paper"></i>
+                            Interromper IA
+                        </button>
+                        <button class="btn btn-danger" id="disconnectBtn">
+                            <i class="fas fa-stop"></i>
+                            Encerrar Conversa
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Conversation Log Panel -->
+            <div class="panel log-panel">
+                <div class="panel-header">
+                    <h2><i class="fas fa-comments"></i> Conversa</h2>
+                    <button class="btn btn-small btn-secondary" id="clearLogBtn">
+                        <i class="fas fa-trash"></i>
+                        Limpar
+                    </button>
+                </div>
+                <div class="panel-content">
+                    <div class="conversation-log" id="conversationLog">
+                        <div class="log-message system">
+                            <div class="message-header">
+                                <i class="fas fa-info-circle"></i>
+                                <span class="message-time">Sistema</span>
+                            </div>
+                            <div class="message-content">
+                                Bem-vindo! Inicie uma conversa para ver as transcrições aqui.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Technical Info Panel -->
+            <div class="panel info-panel">
+                <div class="panel-header">
+                    <h2><i class="fas fa-info-circle"></i> Informações Técnicas</h2>
+                </div>
+                <div class="panel-content">
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <span class="info-label">Latência:</span>
+                            <span class="info-value" id="latencyInfo">-- ms</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Qualidade do Áudio:</span>
+                            <span class="info-value" id="audioQualityInfo">PCM 16kHz</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Modelo:</span>
+                            <span class="info-value" id="modelInfo">GPT-4o Realtime</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Sessão:</span>
+                            <span class="info-value" id="sessionInfo">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>&copy; 2024 OpenAI Realtime Audio Project. Desenvolvido com ❤️ usando Node.js e OpenAI API.</p>
+        </footer>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <p class="loading-text" id="loadingText">Conectando...</p>
+        </div>
+    </div>
+
+    <!-- Error Modal -->
+    <div class="modal-overlay" id="errorModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3><i class="fas fa-exclamation-triangle"></i> Erro</h3>
+                <button class="modal-close" id="errorModalClose">&times;</button>
+            </div>
+            <div class="modal-content">
+                <p id="errorMessage">Ocorreu um erro inesperado.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="errorModalOk">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
